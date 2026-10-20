@@ -1,0 +1,16 @@
+{
+  "name": "DeepSeek-V4.1 原理图谱",
+  "short_name": "V4.1 Atlas",
+  "description": "交互式拆解 DeepSeek-V4.1-Flash 的 40 层架构与 KV 压缩机制。",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#05070d",
+  "theme_color": "#05070d",
+  "icons": [
+    {
+      "src": "assets/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

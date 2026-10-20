@@ -1,0 +1,10 @@
+tmp/
+*.pdf
+*.ndjson
+ref_*.html
+search_*.html
+official_v41.html
+deepseek_repos.json
+gh_*.json
+hf_*.json
+modelscope_v41.html

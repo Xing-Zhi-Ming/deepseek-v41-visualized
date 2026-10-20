@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#05070d">
+  <title>DeepSeek-V4.1 原理图谱 | 40 层、1M 上下文与 KV 压缩</title>
+  <meta name="description" content="交互式拆解 DeepSeek-V4.1-Flash：Causal Encoder-Decoder、CSA2、FP4 KV、Engram、DSpark 与可控推理强度。">
+  <meta property="og:title" content="DeepSeek-V4.1 原理图谱">
+  <meta property="og:description" content="把 552B MoE、1M 上下文和 890 B/token 的 KV 缓存，拆成 40 层来看。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://Xing-Zhi-Ming.github.io/deepseek-v41-visualized/">
+  <meta property="og:image" content="https://Xing-Zhi-Ming.github.io/deepseek-v41-visualized/assets/preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" href="https://Xing-Zhi-Ming.github.io/deepseek-v41-visualized/">
+  <link rel="manifest" href="site.webmanifest">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div class="reading-progress" id="reading-progress" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="site-header" id="site-header">
+    <a class="brand" href="#top" aria-label="回到首页">
+      <span class="brand-mark">V4.1</span>
+      <span class="brand-text">DEEPSEEK <em>ATLAS</em></span>
+    </a>
+    <nav class="top-nav" aria-label="章节导航">
+      <a href="#atlas">模型图谱</a>
+      <a href="#ced">CED</a>
+      <a href="#csa2">CSA2</a>
+      <a href="#kv">缓存预算</a>
+      <a href="#sparsity">稀疏化</a>
+      <a href="#posttrain">后训练</a>
+    </nav>
+    <div class="header-actions">
+      <a class="header-link" href="#sources">技术报告</a>
+      <a class="header-link repo-link" href="https://github.com/Xing-Zhi-Ming/deepseek-v41-visualized" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="打开导航" aria-expanded="false">
+        <span></span><span></span>
+      </button>
+    </div>
+  </header>
+
+  <nav class="mobile-nav" id="mobile-nav" aria-label="移动端章节导航">
+    <a href="#atlas">01 模型图谱</a>
+    <a href="#ced">02 Causal Encoder-Decoder</a>
+    <a href="#csa2">03 Compressed Sparse Attention 2</a>
+    <a href="#kv">04 KV 缓存预算</a>
+    <a href="#sparsity">05 MoE 与 Engram</a>
+    <a href="#dspark">06 DSpark</a>
+    <a href="#posttrain">07 后训练</a>
+    <a href="#evidence">08 证据与边界</a>
+  </nav>
+
+  <main>
+    <section class="hero" id="top">
+      <div class="hero-grid" aria-hidden="true"></div>
+      <div class="hero-glow hero-glow-a" aria-hidden="true"></div>
+      <div class="hero-glow hero-glow-b" aria-hidden="true"></div>
+
+      <div class="hero-copy reveal">
+        <div class="eyebrow">
+          <span class="status-dot"></span>
+          DEEPSEEK-V4.1-FLASH · INTERACTIVE EXPLAINER
+        </div>
+        <h1>把 <span class="grad-text">1M 上下文</span><br>拆成 40 层来看</h1>
+        <p class="hero-lede">
+          它不是“又一个更大的 MoE”。V4.1 把长上下文最贵的两件事拆开处理：
+          <strong>重复的计算</strong>交给 Causal Encoder-Decoder，
+          <strong>重复的 KV 存储</strong>交给 CSA2 与 FP4。
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#atlas">
+            进入模型图谱
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M11 5l5 5-5 5"/></svg>
+          </a>
+          <a class="btn btn-quiet" href="#kv">先看缓存账本</a>
+        </div>
+        <div class="hero-stats">
+          <div class="hero-stat">
+            <span class="stat-value">552<span>B</span></span>
+            <span class="stat-label">骨干总参数</span>
+          </div>
+          <div class="hero-stat">
+            <span class="stat-value">8<span>B</span> / 16<span>B</span></span>
+            <span class="stat-label">Prefill / Decode 激活</span>
+          </div>
+          <div class="hero-stat">
+            <span class="stat-value">890<span>B</span></span>
+            <span class="stat-label">每 token 全局 KV</span>
+          </div>
+          <div class="hero-stat">
+            <span class="stat-value">1<span>M</span></span>
+            <span class="stat-label">最大上下文</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-visual reveal" data-delay="150">
+        <div class="mini-model-card">
+          <div class="mini-card-head">
+            <span>MODEL SPINE</span>
+            <span class="mono">40 LAYERS</span>
+          </div>
+          <div class="mini-model-body">
+            <div class="mini-column">
+              <div class="mini-label"><span>DECODER</span><span>20–39</span></div>
+              <div class="mini-stack mini-decoder" id="hero-decoder"></div>
+            </div>
+            <div class="mini-bridge" aria-hidden="true">
+              <span>H<sub>20</sub></span>
+              <i></i>
+            </div>
+            <div class="mini-column">
+              <div class="mini-label"><span>ENCODER</span><span>00–19</span></div>
+              <div class="mini-stack mini-encoder" id="hero-encoder"></div>
+            </div>
+          </div>
+          <div class="mini-card-foot">
+            <span><i class="legend-dot swa"></i>SWA</span>
+            <span><i class="legend-dot full"></i>Full</span>
+            <span><i class="legend-dot reindex"></i>Reindex</span>
+            <span><i class="legend-dot reuse"></i>Reuse</span>
+          </div>
+          <div class="floating-tag tag-a">prefill · 8B active</div>
+          <div class="floating-tag tag-b">global KV · FP4</div>
+          <div class="floating-tag tag-c">decode · 16B active</div>
+        </div>
+      </div>
+
+      <div class="hero-scroll" aria-hidden="true">
+        <span>SCROLL TO DECOMPOSE</span>
+        <i></i>
+      </div>
+    </section>
+
+    <div class="signal-strip" aria-hidden="true">
+      <div class="signal-track">
+        <span>CED</span><i></i><span>CSA2</span><i></i><span>FP4 KV</span><i></i><span>ENGRAM</span><i></i><span>DSPARK</span><i></i><span>GRPO / RL</span><i></i><span>1M CONTEXT</span><i></i>
+        <span>CED</span><i></i><span>CSA2</span><i></i><span>FP4 KV</span><i></i><span>ENGRAM</span><i></i><span>DSPARK</span><i></i><span>GRPO / RL</span><i></i><span>1M CONTEXT</span><i></i>
+      </div>
+    </div>
+
+    <section class="section section-atlas" id="atlas">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">01 / MODEL ATLAS</div>
+          <h2>一张图，看完 40 层</h2>
+        </div>
+        <p>
+          底层 20 层是 <strong>Causal Encoder</strong>，上层 20 层是 <strong>Decoder</strong>。
+          每一层都保留自己的 Q 和滑动窗口 KV，但全局 KV 与索引可以跨层共享。
+          拖拽旋转，点击任意层查看它在做什么。
+        </p>
+      </div>
+
+      <div class="atlas-layout">
+        <div class="atlas-stage reveal">
+          <div class="atlas-topbar">
+            <div class="atlas-pills">
+              <span class="pill pill-enc">ENCODER 00–19</span>
+              <span class="pill pill-dec">DECODER 20–39</span>
+            </div>
+            <div class="atlas-tools">
+              <button class="tool-btn" id="atlas-rotate" aria-pressed="true">自动旋转</button>
+              <button class="tool-btn" id="atlas-reset">复位视角</button>
+            </div>
+          </div>
+
+          <div class="atlas-canvas-wrap">
+            <canvas id="atlas-canvas" aria-label="DeepSeek-V4.1 40 层模型的三维可旋转示意图"></canvas>
+            <div class="atlas-corner top-left">
+              <span>GLOBAL VIEW</span>
+              <strong id="atlas-phase-label">PREFILL</strong>
+            </div>
+            <div class="atlas-corner top-right">
+              <span>ACTIVE PARAMS</span>
+              <strong id="atlas-active-params">8B</strong>
+            </div>
+            <div class="atlas-hint">拖拽旋转 · 滚轮缩放 · 点击层查看</div>
+            <div class="atlas-tooltip" id="atlas-tooltip"></div>
+          </div>
+
+          <div class="atlas-bottombar">
+            <div class="segmented" role="group" aria-label="切换推理阶段">
+              <button class="seg-btn active" data-phase="prefill">Prefill</button>
+              <button class="seg-btn" data-phase="decode">Decode</button>
+            </div>
+            <button class="play-btn" id="atlas-play">
+              <span class="play-icon">▶</span>
+              <span class="play-text">播放 token 路径</span>
+            </button>
+            <div class="atlas-legend">
+              <span><i class="legend-dot swa"></i>SWA</span>
+              <span><i class="legend-dot full"></i>Full</span>
+              <span><i class="legend-dot reindex"></i>Reindex</span>
+              <span><i class="legend-dot reuse"></i>Reuse</span>
+            </div>
+          </div>
+        </div>
+
+        <aside class="atlas-panel reveal" data-delay="120">
+          <div class="panel-kicker">LAYER INSPECTOR</div>
+          <div class="layer-readout">
+            <span class="layer-number" id="layer-number">ALL</span>
+            <span class="layer-mode" id="layer-mode">40 层总览</span>
+          </div>
+          <h3 id="layer-title">从输入到输出，发生了什么？</h3>
+          <p id="layer-desc">
+            选择左侧任意一层，查看它的注意力模式、是否复用 KV、是否重新计算 Top-K 索引。
+          </p>
+          <div class="layer-facts" id="layer-facts">
+            <div><span>网络层数</span><strong>40</strong></div>
+            <div><span>Encoder / Decoder</span><strong>20 / 20</strong></div>
+            <div><span>专家数</span><strong>384 + 1</strong></div>
+            <div><span>Top-K 检索</span><strong>512</strong></div>
+          </div>
+          <div class="mode-badge" id="mode-badge">点击层以展开</div>
+          <div class="panel-note">
+            <span class="note-mark">i</span>
+            <p>“复用”不等于不计算：每一层仍然计算自己的 Q 与 SWA KV，只是不再重复生成全局 KV / 索引。</p>
+          </div>
+        </aside>
+      </div>
+
+      <div class="atlas-schedule reveal">
+        <div class="schedule-head">
+          <span>层调度表</span>
+          <span class="mono">Full · Reindex · Reuse</span>
+        </div>
+        <div class="schedule-ribbon" id="schedule-ribbon" aria-label="40 层 CSA2 模式调度"></div>
+        <div class="schedule-notes">
+          <span>Encoder：每 6 层 1 次 Full</span>
+          <span>Decoder：首个 4 层 1 次 Full，其余 4 组各 1 次 Reindex</span>
+          <span>Top-K = 512</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="ced">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">02 / CAUSAL ENCODER-DECODER</div>
+          <h2>Prefill 只跑一半的层</h2>
+        </div>
+        <p>
+          输入很长的 Agent 上下文时，真正贵的是 prefill。CED 让 Decoder 的全局 KV
+          直接从第 20 层隐藏状态投影出来，而不是让 40 层都重新算一遍。
+        </p>
+      </div>
+
+      <div class="ced-panel reveal">
+        <div class="ced-visual">
+          <div class="ced-track">
+            <div class="ced-track-label">
+              <span>传统全层 Prefill</span>
+              <strong id="ced-full-cost">40M</strong>
+              <small>layer-token 次访问</small>
+            </div>
+            <div class="ced-blocks" id="ced-full-blocks" aria-hidden="true"></div>
+          </div>
+          <div class="ced-track ced-track-ced">
+            <div class="ced-track-label">
+              <span>CED Prefill</span>
+              <strong id="ced-ced-cost">20M</strong>
+              <small>只算 Encoder + 窗口回放</small>
+            </div>
+            <div class="ced-blocks" id="ced-ced-blocks" aria-hidden="true"></div>
+            <div class="ced-brace">
+              <span>Decoder 全局 KV 由 H<sub>20</sub> 投影</span>
+            </div>
+          </div>
+          <div class="ced-connector" aria-hidden="true">
+            <span class="connector-line"></span>
+            <span class="connector-label">H<sub>20</sub></span>
+          </div>
+        </div>
+
+        <div class="ced-side">
+          <div class="control-block">
+            <label for="ced-length">上下文长度 <output id="ced-length-out">1M</output></label>
+            <input id="ced-length" type="range" min="12" max="20" step="1" value="20" aria-label="上下文长度">
+            <div class="range-scale"><span>4K</span><span>64K</span><span>1M</span></div>
+          </div>
+          <div class="big-ratio">
+            <span id="ced-ratio">50.1%</span>
+            <small>相对全层 prefill 的计算访问量</small>
+          </div>
+          <div class="formula-card">
+            <div class="formula-label">CED 的关键投影</div>
+            <div class="formula">C<sub>l</sub> = H<sub>20</sub> W<sub>l</sub><sup>KV</sup></div>
+            <div class="formula">Z<sub>l</sub> = H<sub>20</sub> W<sub>l</sub><sup>Z</sup></div>
+            <p>Decoder 每层只保留自己的投影权重，不再持有独立的全局 K/V 计算路径。</p>
+          </div>
+          <div class="mini-stat-row">
+            <div><strong>≈ 1/2</strong><span>prefill 计算</span></div>
+            <div><strong>8B → 16B</strong><span>prefill → decode 激活</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="insight-row reveal">
+        <div class="insight-card">
+          <span class="insight-num">A</span>
+          <h3>输入重，输出轻</h3>
+          <p>Agent 工作流里，输入上下文远多于输出 token。CED 把“读长文”的成本压到约一半，而 decode 仍保留 20 层 Decoder 的生成深度。</p>
+        </div>
+        <div class="insight-card">
+          <span class="insight-num">B</span>
+          <h3>局部仍然逐层计算</h3>
+          <p>SWA 的局部 KV 仍由每一层自己的隐藏状态生成。省掉的是重复的全局 KV，不是所有注意力。</p>
+        </div>
+        <div class="insight-card">
+          <span class="insight-num">C</span>
+          <h3>少算，但要少得可控</h3>
+          <p>Decoder SWA 只用最近 128 个 token 做 bounded replay；官方报告称对响应质量的影响可以忽略。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="csa2">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">03 / COMPRESSED SPARSE ATTENTION 2</div>
+          <h2>缓存不是每层都存一份</h2>
+        </div>
+        <p>
+          CSA2 从三个维度同时压缩 KV：条目大小、序列长度、层数。
+          核心动作是把“生成全局 KV”和“重新选 Top-K”拆开，让不同层只做自己必须做的那一部分。
+        </p>
+      </div>
+
+      <div class="csa2-panel reveal">
+        <div class="csa2-tabs" role="tablist" aria-label="CSA2 三种模式">
+          <button class="mode-tab active" data-mode="full" role="tab" aria-selected="true">
+            <span>Full</span><small>完整计算</small>
+          </button>
+          <button class="mode-tab" data-mode="reindex" role="tab" aria-selected="false">
+            <span>Reindex</span><small>复用 KV，重选索引</small>
+          </button>
+          <button class="mode-tab" data-mode="reuse" role="tab" aria-selected="false">
+            <span>Reuse</span><small>KV 与索引都复用</small>
+          </button>
+        </div>
+
+        <div class="csa2-body">
+          <div class="csa2-diagram" id="csa2-diagram">
+            <div class="flow-row">
+              <div class="flow-node node-mainq" data-node="mainq"><span>Main Q</span><small>当前层</small></div>
+              <div class="flow-node node-indexq" data-node="indexq"><span>Indexer Q</span><small>当前层</small></div>
+              <div class="flow-node node-swa" data-node="swa"><span>SWA KV</span><small>当前层 · 128</small></div>
+            </div>
+            <div class="flow-arrow"><span></span></div>
+            <div class="flow-row flow-row-center">
+              <div class="flow-node node-mainkv" data-node="mainkv"><span>Main KV</span><small>全局缓存</small></div>
+              <div class="flow-node node-indexkv" data-node="indexkv"><span>Indexer K</span><small>索引键</small></div>
+              <div class="flow-node node-topk" data-node="topk"><span>Top-K</span><small>512 条</small></div>
+            </div>
+            <div class="flow-arrow"><span></span></div>
+            <div class="flow-row flow-row-output">
+              <div class="flow-node node-selected" data-node="selected"><span>Selected KV</span><small>512 + SWA</small></div>
+              <div class="flow-node node-output" data-node="output"><span>Attention Output</span><small>进入 MoE</small></div>
+            </div>
+            <div class="flow-status" id="csa2-status"></div>
+          </div>
+
+          <div class="csa2-side">
+            <div class="mode-readout">
+              <div class="panel-kicker">MODE</div>
+              <h3 id="csa2-mode-title">Full Mode</h3>
+              <p id="csa2-mode-desc">当前层生成自己的 Main KV 与 Indexer K，运行完整索引器，产出全新的 Top-K。</p>
+            </div>
+            <div class="node-key">
+              <span><i class="key-box computed"></i>当前层计算</span>
+              <span><i class="key-box shared"></i>复用前层 KV</span>
+              <span><i class="key-box index-reused"></i>复用索引</span>
+              <span><i class="key-box skipped"></i>不参与</span>
+            </div>
+            <div class="cost-cards">
+              <div><span>缓存共享</span><strong id="csa2-share">1 / 4–6 层</strong><small>组内共享</small></div>
+              <div><span>索引计算</span><strong id="csa2-index-cost">每层都算</strong><small>Top-K 重新打分</small></div>
+              <div><span>全局 KV 保留</span><strong>1 份</strong><small>组内共享</small></div>
+            </div>
+            <p class="small-note">V4.1 使用纯 CSA2：Encoder 压缩率 m=2，Decoder m=1；不再保留 V4 的 CSA–HCA 混合层。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="schedule-detail reveal">
+        <div class="schedule-detail-copy">
+          <div class="panel-kicker">LAYER SCHEDULE</div>
+          <h3>谁在 Full，谁在偷懒？</h3>
+          <p>点击下方任意一层，查看模式与分组。Encoder 每 6 层一组：1 层 Full + 5 层 Reuse。Decoder 每 4 层一组：首组 1 层 Full + 3 层 Reuse，其余组 1 层 Reindex + 3 层 Reuse。</p>
+        </div>
+        <div class="schedule-detail-ribbon" id="csa2-ribbon" aria-label="CSA2 40 层详细调度"></div>
+        <div class="schedule-detail-readout" id="csa2-layer-readout">悬停或点击层查看细节</div>
+      </div>
+    </section>
+
+    <section class="section" id="indexer">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">03.2 / HIERARCHICAL SPARSE INDEXER</div>
+          <h2>上下文越长，后面的索引越不该全扫</h2>
+        </div>
+        <p>
+          Decoder 的第一个 Full 层先扫完整上下文，并把高分块放进一个候选池。
+          后面的 Reindex 层只在池子里重选 Top-512，不再线性扫完整条序列。
+        </p>
+      </div>
+
+      <div class="indexer-panel reveal">
+        <div class="indexer-canvas-wrap">
+          <canvas id="indexer-canvas" aria-label="层次稀疏索引器的候选池与 Top-K 选择动画"></canvas>
+          <div class="indexer-overlay">
+            <span id="indexer-stage">FULL LAYER · SCAN ALL</span>
+            <strong id="indexer-scan-count">1,000,000</strong>
+            <small>positions scored / query</small>
+          </div>
+        </div>
+        <div class="indexer-side">
+          <div class="indexer-steps">
+            <div class="indexer-step active" data-step="0">
+              <span>01</span>
+              <div><strong>Full 层全扫</strong><p>对因果可见位置打分，选出自己的 Top-512。</p></div>
+            </div>
+            <div class="indexer-step" data-step="1">
+              <span>02</span>
+              <div><strong>按块建候选池</strong><p>每 8 个位置一块，取块内最高分；选最多 2,048 块。</p></div>
+            </div>
+            <div class="indexer-step" data-step="2">
+              <span>03</span>
+              <div><strong>Reindex 只在池里选</strong><p>后续索引器最多评分 16,384 个候选位置。</p></div>
+            </div>
+          </div>
+          <div class="control-block">
+            <label for="indexer-context">上下文长度 <output id="indexer-context-out">1M</output></label>
+            <input id="indexer-context" type="range" min="16" max="20" step="1" value="20" aria-label="索引器上下文长度">
+            <div class="range-scale"><span>64K</span><span>256K</span><span>1M</span></div>
+          </div>
+          <div class="indexer-metric">
+            <div><span>首层扫描</span><strong id="indexer-full-scan">1,000,000</strong></div>
+            <div><span>后续层上限</span><strong>16,384</strong></div>
+            <div><span>相对扫描量</span><strong id="indexer-ratio">1.6%</strong></div>
+          </div>
+          <p class="small-note">候选池大小固定，所以后续索引成本随上下文长度增长而有上界；首层仍然需要一次全范围扫描。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="kv">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">04 / KV CACHE BUDGET</div>
+          <h2>把“上下文”换算成内存</h2>
+        </div>
+        <p>
+          官方报告给出的关键数字是 890 B/token（HBM 中的 global KV）。
+          相比 V4-Flash 约 1/4，相比初代 DeepSeek 约 1/437。持久化缓存再用 bounded replay 降到 1/8。
+        </p>
+      </div>
+
+      <div class="kv-panel reveal">
+        <div class="kv-chart-wrap">
+          <div class="kv-chart-head">
+            <div>
+              <span class="panel-kicker">GLOBAL KV · BYTES / TOKEN</span>
+              <h3>同一上下文，不同代际的常驻 KV</h3>
+            </div>
+            <div class="kv-legend"><span><i class="bar-v1"></i>V1</span><span><i class="bar-v4"></i>V4-Flash</span><span><i class="bar-v41"></i>V4.1-Flash</span></div>
+          </div>
+          <div class="kv-bars" id="kv-bars">
+            <div class="kv-row" data-value="388930">
+              <div class="kv-row-label"><span>DeepSeek-V1</span><small>≈ 437×</small></div>
+              <div class="kv-bar-track"><div class="kv-bar bar-v1" style="--w:100%"></div></div>
+              <div class="kv-row-value">388,930 <small>B</small></div>
+            </div>
+            <div class="kv-row" data-value="3560">
+              <div class="kv-row-label"><span>DeepSeek-V4-Flash</span><small>≈ 4×</small></div>
+              <div class="kv-bar-track"><div class="kv-bar bar-v4" style="--w:42%"></div></div>
+              <div class="kv-row-value">3,560 <small>B</small></div>
+            </div>
+            <div class="kv-row" data-value="890">
+              <div class="kv-row-label"><span>DeepSeek-V4.1-Flash</span><small>基准</small></div>
+              <div class="kv-bar-track"><div class="kv-bar bar-v41" style="--w:18%"></div></div>
+              <div class="kv-row-value">890 <small>B</small></div>
+            </div>
+          </div>
+          <p class="chart-caption">柱长采用对数感知的展示方式；精确倍数以右侧数值与技术报告为准。</p>
+        </div>
+
+        <div class="kv-calculator">
+          <div class="panel-kicker">CACHE CALCULATOR</div>
+          <h3>一条 1M 上下文请求，要占多少？</h3>
+          <label for="kv-context">上下文长度 <output id="kv-context-out">1,000,000 tokens</output></label>
+          <input id="kv-context" type="range" min="14" max="20" step="1" value="20" aria-label="KV 计算器上下文长度">
+          <div class="range-scale"><span>16K</span><span>128K</span><span>1M</span></div>
+          <div class="calc-results">
+            <div class="calc-result calc-v4">
+              <span>V4-Flash · global</span>
+              <strong id="calc-v4">3.56 GB</strong>
+              <small>单请求</small>
+            </div>
+            <div class="calc-result calc-v41">
+              <span>V4.1 · global</span>
+              <strong id="calc-v41">0.89 GB</strong>
+              <small>单请求</small>
+            </div>
+          </div>
+          <div class="calc-persistent">
+            <span>持久化缓存（≈ 1/8）</span>
+            <strong id="calc-persistent">0.89 GB / 请求</strong>
+          </div>
+          <div class="concurrency">
+            <span>100 条并发请求的 global KV</span>
+            <strong id="calc-batch">89 GB vs 356 GB</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="kv-notes reveal">
+        <div><span class="note-mark">01</span><p><strong>890 B/token</strong> 是 global KV 的常驻足迹，不是整个模型权重，也不是所有中间激活。</p></div>
+        <div><span class="note-mark">02</span><p>FP4 只用于 <strong>main KV</strong>；对量化更敏感的 SWA KV 仍保留 FP8。</p></div>
+        <div><span class="note-mark">03</span><p><strong>1/8</strong> 指 persistent KV 相对 V4-Flash 同长度的缩减；它结合了“不持久化 SWA”和 global KV 的 1/4。</p></div>
+      </div>
+    </section>
+
+    <section class="section" id="sparsity">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">05 / SPARSE EXPERTS &amp; CONDITIONAL MEMORY</div>
+          <h2>不是所有参数都要为每个 token 工作</h2>
+        </div>
+        <p>
+          552B 是“总容量”，不是每个 token 的“计算量”。MoE 负责把计算路由到少数专家，
+          Engram 则把可查表的知识从矩阵计算里拿出来，变成条件记忆。
+        </p>
+      </div>
+
+      <div class="sparsity-grid">
+        <div class="moe-card reveal">
+          <div class="card-head">
+            <div>
+              <span class="panel-kicker">DEEPSEEK MOE</span>
+              <h3>384 个路由专家，只叫醒 6 个</h3>
+            </div>
+            <div class="card-stat"><strong>8B / 16B</strong><span>激活参数</span></div>
+          </div>
+          <div class="moe-canvas-wrap">
+            <canvas id="moe-canvas" aria-label="MoE 专家路由动画"></canvas>
+            <div class="moe-token-label" id="moe-token-label">TEXT TOKEN</div>
+          </div>
+          <div class="moe-controls">
+            <div class="segmented small" role="group" aria-label="选择模态">
+              <button class="seg-btn active" data-modality="text">Text</button>
+              <button class="seg-btn" data-modality="image">Image</button>
+            </div>
+            <button class="btn btn-small" id="moe-route">路由一个新 token</button>
+            <span class="mono moe-routing" id="moe-routing">shared + 6 experts</span>
+          </div>
+          <p class="card-note">图像与文本各有一套专家偏置，避免两种模态的负载互相“平均掉”。</p>
+        </div>
+
+        <div class="engram-card reveal" data-delay="100">
+          <div class="card-head">
+            <div>
+              <span class="panel-kicker">ENGRAM</span>
+              <h3>196B 参数的“条件记忆”</h3>
+            </div>
+            <div class="card-stat"><strong>2</strong><span>模块 · 层 1 / 14（0-based）</span></div>
+          </div>
+          <div class="engram-input-row">
+            <label for="engram-input">输入一段文本</label>
+            <input id="engram-input" type="text" value="DeepSeek V4.1" maxlength="60" spellcheck="false">
+          </div>
+          <div class="engram-flow">
+            <div class="engram-token" id="engram-token">DeepSeek V4.1</div>
+            <div class="engram-arrow"><span>n-gram → hash × 8</span></div>
+            <div class="engram-buckets" id="engram-buckets"></div>
+          </div>
+          <div class="engram-stats">
+            <div><span>N-gram 阶</span><strong>2 / 3 / 4</strong></div>
+            <div><span>每头表大小</span><strong>≈16M</strong></div>
+            <div><span>精度</span><strong>FP8</strong></div>
+            <div><span>预取</span><strong>RDMA</strong></div>
+          </div>
+          <p class="card-note">哈希地址在推理前可确定，因此 embedding 可以从主机内存预取，和 Transformer 第一层计算重叠。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="dspark">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">06 / DSPARK</div>
+          <h2>一次草拟 5 个，再决定验几个</h2>
+        </div>
+        <p>
+          DSpark 是 V4.1 的投机解码模块：一个 3 层 drafter 并行给出 5 个草稿位置，
+          Markov head 补 token 间依赖，confidence head 估计每一步的接受概率，调度器再按当前系统负载选验证长度。
+        </p>
+      </div>
+
+      <div class="dspark-panel reveal">
+        <div class="dspark-visual">
+          <div class="draft-stream" id="draft-stream"></div>
+          <div class="draft-legend">
+            <span><i class="draft-dot accepted"></i>接受</span>
+            <span><i class="draft-dot rejected"></i>拒绝 / 重采样</span>
+            <span><i class="draft-dot pending"></i>待验证</span>
+          </div>
+          <div class="verify-meter">
+            <span>本轮验证长度</span>
+            <strong id="dspark-verify">4</strong>
+            <div class="verify-track"><i id="dspark-verify-bar"></i></div>
+          </div>
+        </div>
+        <div class="dspark-side">
+          <div class="control-block">
+            <label for="dspark-load">系统负载 <output id="dspark-load-out">中</output></label>
+            <input id="dspark-load" type="range" min="0" max="100" step="1" value="45" aria-label="系统负载">
+            <div class="range-scale"><span>空闲</span><span>适中</span><span>拥塞</span></div>
+          </div>
+          <button class="btn btn-primary btn-small" id="dspark-run">生成一轮草稿</button>
+          <div class="dspark-metrics">
+            <div><span>草稿位置</span><strong>5</strong><small>单次前向</small></div>
+            <div><span>Decode 激活</span><strong>16B</strong><small>主干</small></div>
+            <div><span>目标</span><strong>吞吐 ↑</strong><small>按负载自适应</small></div>
+          </div>
+          <p class="card-note">这是机制示意，不是官方吞吐数字：实际接受率取决于模型、采样温度与任务分布。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="posttrain">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">07 / POST-TRAINING</div>
+          <h2>算法没变，数据和环境变了</h2>
+        </div>
+        <p>
+          官方报告明确说：后训练没有引入新的算法，仍是 SFT → RL → on-policy distillation。
+          真正的增量来自大规模任务合成、可验证环境，以及可控的 reasoning effort。
+        </p>
+      </div>
+
+      <div class="pipeline reveal">
+        <div class="pipeline-step">
+          <span class="pipeline-num">01</span>
+          <div><strong>任务合成</strong><p>问题、环境、验证器三元组；自动构造代码与通用 Agent 任务。</p></div>
+        </div>
+        <i class="pipeline-arrow" aria-hidden="true"></i>
+        <div class="pipeline-step">
+          <span class="pipeline-num">02</span>
+          <div><strong>SFT</strong><p>用高质量轨迹建立基础行为与工具使用格式。</p></div>
+        </div>
+        <i class="pipeline-arrow" aria-hidden="true"></i>
+        <div class="pipeline-step">
+          <span class="pipeline-num">03</span>
+          <div><strong>RL</strong><p>在可验证环境里做大规模异步 rollout，按结果给奖励。</p></div>
+        </div>
+        <i class="pipeline-arrow" aria-hidden="true"></i>
+        <div class="pipeline-step">
+          <span class="pipeline-num">04</span>
+          <div><strong>OPD</strong><p>on-policy distillation，把强策略的能力压回目标模型。</p></div>
+        </div>
+      </div>
+
+      <div class="effort-panel reveal">
+        <div class="effort-copy">
+          <div class="panel-kicker">CONTROLLABLE REASONING EFFORT</div>
+          <h3>一个标量，控制“想多久”</h3>
+          <p>训练时在系统提示里加入 <code>Reasoning Effort: 1–100</code>。同一道题的不同 effort 分组内比较，长度惩罚随 effort 指数衰减。</p>
+          <label for="effort-slider">Effort <output id="effort-out">100</output></label>
+          <input id="effort-slider" type="range" min="25" max="100" step="25" value="100" aria-label="推理强度">
+          <div class="range-scale"><span>25</span><span>50</span><span>75</span><span>100</span></div>
+          <div class="effort-tags">
+            <span>low = 50</span><span>high = 75</span><span>max = 100</span>
+          </div>
+        </div>
+        <div class="effort-chart">
+          <div class="effort-bars" id="effort-bars">
+            <div class="effort-group">
+              <span>推理基准均值</span>
+              <div class="effort-bar-row"><i style="--w:67.1%"></i><b>67.1</b></div>
+              <div class="effort-bar-row effort-max"><i style="--w:76.3%"></i><b>76.3</b></div>
+            </div>
+            <div class="effort-group">
+              <span>DeepSWE v1.1</span>
+              <div class="effort-bar-row"><i style="--w:66%"></i><b>66.0</b></div>
+              <div class="effort-bar-row effort-max"><i style="--w:74.2%"></i><b>74.2</b></div>
+            </div>
+            <div class="effort-group">
+              <span>Terminal-Bench 2.1</span>
+              <div class="effort-bar-row"><i style="--w:82.4%"></i><b>82.4</b></div>
+              <div class="effort-bar-row effort-max"><i style="--w:90.6%"></i><b>90.6</b></div>
+            </div>
+          </div>
+          <div class="effort-legend"><span><i></i>effort 25</span><span><i class="max"></i>effort 100</span></div>
+          <p class="chart-caption">数据来自官方技术报告；从 25 提到 100 的代价约为 2.5× 输出 token。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="evidence">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">08 / EVIDENCE &amp; BOUNDARIES</div>
+          <h2>它强在哪，边界又在哪</h2>
+        </div>
+        <p>
+          下面只选了几项代表性数据，全部来自 V4.1 技术报告的 Max effort 设置。
+          它们说明“小激活也能打”，但不代表所有任务都追平闭源前沿模型。
+        </p>
+      </div>
+
+      <div class="evidence-grid reveal">
+        <div class="benchmark-card">
+          <div class="benchmark-head"><span>Agentic coding</span><span class="mono">Pass@1 / Resolved</span></div>
+          <div class="benchmark-row">
+            <span>DeepSWE v1.1</span>
+            <div class="pair-bars"><i class="old" style="--w:54.4%"></i><i class="new" style="--w:74.2%"></i></div>
+            <strong>74.2</strong>
+          </div>
+          <div class="benchmark-row">
+            <span>Terminal-Bench 2.1</span>
+            <div class="pair-bars"><i class="old" style="--w:82.7%"></i><i class="new" style="--w:90.6%"></i></div>
+            <strong>90.6</strong>
+          </div>
+          <div class="benchmark-row">
+            <span>NL2Repo-Bench</span>
+            <div class="pair-bars"><i class="old" style="--w:54.2%"></i><i class="new" style="--w:65.4%"></i></div>
+            <strong>65.4</strong>
+          </div>
+          <div class="benchmark-foot"><span><i class="old"></i>V4-Flash</span><span><i class="new"></i>V4.1-Flash</span></div>
+        </div>
+
+        <div class="benchmark-card">
+          <div class="benchmark-head"><span>Reasoning</span><span class="mono">Pass@1 / Rating</span></div>
+          <div class="benchmark-row">
+            <span>GPQA Diamond</span>
+            <div class="pair-bars"><i class="old" style="--w:89.9%"></i><i class="new" style="--w:90.9%"></i></div>
+            <strong>90.9</strong>
+          </div>
+          <div class="benchmark-row">
+            <span>MathArena Apex</span>
+            <div class="pair-bars"><i class="old" style="--w:58.6%"></i><i class="new" style="--w:65.6%"></i></div>
+            <strong>65.6</strong>
+          </div>
+          <div class="benchmark-row">
+            <span>Codeforces</span>
+            <div class="pair-bars"><i class="old" style="--w:82.2%"></i><i class="new" style="--w:86.8%"></i></div>
+            <strong>3471</strong>
+          </div>
+          <div class="benchmark-foot"><span><i class="old"></i>V4-Flash</span><span><i class="new"></i>V4.1-Flash</span></div>
+        </div>
+      </div>
+
+      <div class="boundary-row reveal">
+        <div class="boundary-card">
+          <span class="boundary-tag">仍然存在的差距</span>
+          <p>在 HLE、部分视觉 Agent 与最难闭源模型对比上仍有差距。官方也明确提醒：基准接近不等于所有边界场景都等价。</p>
+        </div>
+        <div class="boundary-card">
+          <span class="boundary-tag">近似带来的风险</span>
+          <p>CSA2 的选择误差与 SWA bounded replay 的近似状态，在未覆盖的极端输入或缓存恢复边界上仍可能造成退化。</p>
+        </div>
+        <div class="boundary-card">
+          <span class="boundary-tag">版本说明</span>
+          <p>本文以 2026-09-10 发布的 V4.1-Flash 与其技术报告为准；10-17 的 1017 版本是权重更新，架构口径不变。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-summary" id="summary">
+      <div class="summary-inner reveal">
+        <div class="section-index">09 / ONE-SENTENCE VERSION</div>
+        <h2>V4.1 的核心，是把长上下文拆成两条成本曲线</h2>
+        <p class="summary-lede">
+          计算侧，CED 让 Decoder 的 global KV 从 H<sub>20</sub> 投影，prefill 只跑一半的层；
+          存储侧，CSA2 让多层共享 KV 与索引，FP4 再把 main KV 压到 4 bit。
+          两者相乘，才有 1M 上下文下 890 B/token 的 global KV，以及 1/8 的持久化缓存。
+        </p>
+        <div class="mechanism-chain">
+          <div class="chain-node"><span>01</span><strong>Vision + Text</strong><small>原生多模态输入</small></div>
+          <i></i>
+          <div class="chain-node"><span>02</span><strong>20L Encoder</strong><small>8B 激活 · CSA2</small></div>
+          <i></i>
+          <div class="chain-node accent"><span>03</span><strong>H<sub>20</sub></strong><small>投影出 Decoder KV</small></div>
+          <i></i>
+          <div class="chain-node"><span>04</span><strong>20L Decoder</strong><small>16B 激活 · 层次索引</small></div>
+          <i></i>
+          <div class="chain-node"><span>05</span><strong>DSpark</strong><small>草稿 + 验证</small></div>
+          <i></i>
+          <div class="chain-node"><span>06</span><strong>Output</strong><small>自回归 token</small></div>
+        </div>
+        <div class="summary-cta">
+          <a class="btn btn-primary" href="#top">重新走一遍</a>
+          <a class="btn btn-quiet" href="#sources">查看全部来源</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section sources" id="sources">
+      <div class="section-head reveal">
+        <div>
+          <div class="section-index">SOURCES</div>
+          <h2>来源与延伸阅读</h2>
+        </div>
+        <p>页面中的架构参数、890 B/token、1/4 与 1/8、训练 token 数、后训练流程和基准数据，均以官方技术报告为主。</p>
+      </div>
+      <div class="source-list reveal">
+        <a class="source-item" href="https://www.deepseek.com/news/deepseek-v4-1-flash/" target="_blank" rel="noreferrer">
+          <span class="source-type">官方发布</span>
+          <div><strong>DeepSeek V4.1 Flash：更强、更快、更普惠</strong><span>DeepSeek News · 2026-09-10</span></div>
+          <i>↗</i>
+        </a>
+        <a class="source-item" href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf" target="_blank" rel="noreferrer">
+          <span class="source-type">技术报告</span>
+          <div><strong>DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression</strong><span>DeepSeek-AI · PDF · 51 pages</span></div>
+          <i>↗</i>
+        </a>
+        <a class="source-item" href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash" target="_blank" rel="noreferrer">
+          <span class="source-type">模型卡</span>
+          <div><strong>DeepSeek-V4.1-Flash</strong><span>Hugging Face · 权重与模型卡</span></div>
+          <i>↗</i>
+        </a>
+        <a class="source-item" href="https://github.com/Xing-Zhi-Ming/deepseek-v41-visualized" target="_blank" rel="noreferrer">
+          <span class="source-type">本站仓库</span>
+          <div><strong>deepseek-v41-visualized</strong><span>源码 · GitHub Pages</span></div>
+          <i>↗</i>
+        </a>
+        <a class="source-item" href="https://www.llm-visualized.com" target="_blank" rel="noreferrer">
+          <span class="source-type">视觉参考</span>
+          <div><strong>LLM-Visualized</strong><span>交互式模型可视化参考</span></div>
+          <i>↗</i>
+        </a>
+        <a class="source-item" href="https://bbycroft.net/llm" target="_blank" rel="noreferrer">
+          <span class="source-type">视觉参考</span>
+          <div><strong>LLM Visualization</strong><span>3D walkthrough 参考</span></div>
+          <i>↗</i>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-brand"><span class="brand-mark">V4.1</span><span>DEEPSEEK ATLAS</span></div>
+    <p>一个用于理解 DeepSeek-V4.1-Flash 架构的交互式教学页面。非官方项目。</p>
+    <div class="footer-meta">
+      <span>Built with HTML · CSS · Canvas</span>
+      <a href="#top">Back to top ↑</a>
+    </div>
+  </footer>
+
+  <div class="side-rail" id="side-rail" aria-label="页面章节">
+    <a href="#top" data-section="top" class="active"><span>Top</span></a>
+    <a href="#atlas" data-section="atlas"><span>01</span></a>
+    <a href="#ced" data-section="ced"><span>02</span></a>
+    <a href="#csa2" data-section="csa2"><span>03</span></a>
+    <a href="#indexer" data-section="indexer"><span>03.2</span></a>
+    <a href="#kv" data-section="kv"><span>04</span></a>
+    <a href="#sparsity" data-section="sparsity"><span>05</span></a>
+    <a href="#dspark" data-section="dspark"><span>06</span></a>
+    <a href="#posttrain" data-section="posttrain"><span>07</span></a>
+    <a href="#evidence" data-section="evidence"><span>08</span></a>
+    <a href="#summary" data-section="summary"><span>09</span></a>
+  </div>
+
+  <div class="glossary-pop" id="glossary-pop" role="tooltip" hidden></div>
+
+  <script src="assets/app.js" defer></script>
+</body>
+</html>
